@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -26,7 +27,7 @@ handler_t accept_handler(void *ctx, int revents){
     int new_fd;
     struct sockaddr_in client_addr; // connector's address information
     socklen_t sin_size;
-    printf("Get the client connected!"); 
+    printf("The process %d get the client connected!", getpid()); 
     new_fd = accept(sock_fd, (struct sockaddr *)&client_addr, &sin_size);
     if (new_fd <= 0) {
         perror("accept");
@@ -44,7 +45,8 @@ int main(){
     int sock_fd;  // listen on sock_fd, new connection on new_fd
     struct sockaddr_in server_addr;    // server address information
     int yes = 1;
-
+    int graceful_shutdown = 0;
+    int srv_shutdown = 0;
     if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("socket");
         exit(1);
@@ -71,6 +73,71 @@ int main(){
     }
 
     printf("listen port %d\n", 10001);
+    int num_childs = 4;
+	if (num_childs > 0) {
+		int child = 0;
+		while (!child ) {
+			if (num_childs > 0) {
+				switch (fork()) {
+				case -1:
+					return -1;
+				case 0:
+					child = 1;
+					break;
+				default:
+					num_childs--;
+					break;
+				}
+			} else {
+				int status;
+
+				if (-1 != wait(&status)) {
+					/** 
+					 * one of our workers went away 
+					 */
+					num_childs++;
+					if (WIFEXITED(status)) {
+                        printf("WIFEXITED");
+					} else if (WIFSIGNALED(status)) {
+                        printf("WIFSIGNALED");
+					} else if (WIFSTOPPED(status)) {
+                        printf("WIFSTOPPED");
+					} else if (WIFCONTINUED(status)) {
+                        printf("WIFCONTINUED");
+					}
+				} else {
+					switch (errno) {
+					case EINTR:
+						/**
+						 * if we receive a SIGHUP we have to close our logs ourself as we don't 
+						 * have the mainloop who can help us here
+						 */
+                        perror("Signal Interrupt");
+                        printf("%s\n", strerror(errno));
+						break;
+					default:
+						break;
+					}
+				}
+			}
+		}
+
+		/**
+		 * for the parent this is the exit-point 
+		 */
+		if (!child) {
+			/** 
+			 * kill all children too 
+			 */
+			if (graceful_shutdown) {
+				kill(0, SIGINT);
+			} else if (srv_shutdown) {
+				kill(0, SIGTERM);
+			}
+			return 0;
+		}
+	}
+
     //初始化event
     int fd_ndx = -1;
     int n = -1;
